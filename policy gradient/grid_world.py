@@ -20,7 +20,19 @@ class GridWorld:
         desc=None,
         forbidden_score=-1,
         terminal_score=1,
+        init_state=10,
+        move_score=0,
+        hit_wall_score=-1,
+        action_space=5,
     ) -> None:
+        self.move_score = move_score
+        self.hit_wall_score = hit_wall_score
+        self.terminal_score = terminal_score
+        self.forbidden_score = forbidden_score
+        self.action_space = action_space
+        self.map_description = None
+        self.terminal = 0
+
         self.action_effects = {
             Action.UP: (-1, 0),
             Action.RIGHT: (0, 1),
@@ -28,11 +40,13 @@ class GridWorld:
             Action.LEFT: (0, -1),
             Action.KEEP: (0, 0),
         }
-        self.terminal_score = terminal_score
-        self.forbidden_score = forbidden_score
+
         if desc is not None:
+            self.map_description = desc
             self.rows = len(desc)
             self.cols = len(desc[0])
+            self.init_state = [init_state // self.cols, init_state % self.cols]
+            self.now_state = self.init_state
             grid = []
             for i in range(self.rows):
                 tmp = []
@@ -50,6 +64,8 @@ class GridWorld:
                 [i * self.cols + j for j in range(self.cols)] for i in range(self.rows)
             ]
         else:
+            self.init_state = [init_state // self.cols, init_state % self.cols]
+            self.now_state = self.init_state
             state_index = [i for i in range(self.rows * self.cols)]
             random.shuffle(state_index)
 
@@ -63,6 +79,19 @@ class GridWorld:
                 reward[state_index[forbidden_area_nums + i]] = self.terminal_score
 
             self.reward = np.array(reward).reshape(rows, cols)
+
+            desc = []
+            for i in range(self.rows):
+                s = ""
+                for j in range(self.cols):
+                    tmp = {
+                        self.move_score: ".",
+                        self.forbidden_score: "#",
+                        self.terminal_score: "T",
+                    }
+                    s = s + tmp[self.reward[i][j]]
+                desc.append(s)
+            self.map_description = desc
             self.state_index = [
                 [i * self.cols + j for j in range(self.cols)] for i in range(self.rows)
             ]
@@ -75,13 +104,22 @@ class GridWorld:
                 s = s + tmp[self.reward[i][j]]
             print(s)
 
+    def get_observation_space(self):
+        return 2
+
+    def get_action_space(self):
+        return self.action_space
+
+    def get_map_description(self):
+        return self.map_description
+
     def get_reward(self, nowState, action):
         x = nowState // self.cols
         y = nowState % self.cols
 
         if x < 0 or y < 0 or x >= self.rows or y >= self.cols:
             print(f"coordinate error: ({x},{y})")
-        if action not in Action:
+        if (action < 0 or action >= self.action_space):
             print(f"action error: ({action})")
 
         next_x = x + self.action_effects[action][0]
@@ -102,41 +140,40 @@ class GridWorld:
                 s = s + "✅"
             if self.reward[nowx][nowy] == 0:
                 tmp = {0: "⬆️", 1: "➡️", 2: "⬇️", 3: "⬅️", 4: "🔄"}
-                if policy.ndim == 0:
-                    s = s + tmp[policy[i]]
-                else:
-                    s = s + tmp[np.argmax(policy[i])]
+                s = s + tmp[np.argmax(policy[i])]
             if self.reward[nowx][nowy] == self.forbidden_score:
                 tmp = {0: "⏫️", 1: "⏩️", 2: "⏬", 3: "⏪", 4: "🔄"}
-                if policy.ndim == 0:
-                    s = s + tmp[policy[i]]
-                else:
-                    s = s + tmp[np.argmax(policy[i])]
+                s = s + tmp[np.argmax(policy[i])]
             if nowy == self.cols - 1:
                 print(s)
                 s = ""
 
-    def get_traj(self, state, action, policy, steps, stop_when_reach_target=False):
+    def get_traj(self, state, action, policy):
         res = []
-        if stop_when_reach_target:
-            steps = 20000
+        nextState = state
+        nextAction = action
 
-        for i in range(steps + 1):
-            state = state
-            action = action
+        for i in range(1001):
+            state = nextState
+            action = nextAction
 
-            reward, next_state = self.get_reward(state, action)
-            next_action = np.random.choice(
-                range(5), size=1, replace=False, p=policy[next_state]
+            score, nextState = self.get_reward(state, action)
+            nextAction = np.random.choice(
+                range(self.action_space),
+                size=1,
+                replace=False,
+                p=policy[nextState],
             )[0]
-            res.append((state, action, reward, next_state, next_action))
 
-            if stop_when_reach_target:
-                x = state // self.cols
-                y = state % self.cols
-                if self.reward[x][y] == self.terminal_score:
-                    return res
+            terminal = 0
+            nxtx, nxty = nextState // self.cols, nextState % self.cols
+            if self.reward[nxtx][nxty] == self.terminal_score:
+                terminal = 1
 
+            res.append((state, action, score, nextState, nextAction, terminal))
+
+            if terminal:
+                return res
         return res
 
     def get_state_space_size(self) -> int:
@@ -154,3 +191,21 @@ class GridWorld:
     def convert_state_to_pos(self, state: int):
         """Convert state number to 2D position"""
         return state // self.cols, state % self.cols
+
+    def reset(self):
+        self.now_state = self.init_state
+        self.terminal = 0
+        return self.now_state
+
+    def step(self, action):
+        reward, next_state = self.get_reward(
+            self.now_state[0] * self.cols + self.now_state[1], action
+        )
+
+        nxtx, nxty = next_state // self.cols, next_state % self.cols
+        next_state = [nxtx, nxty]
+        self.now_state = [nxtx, nxty]
+        if self.reward[nxtx][nxty] == self.terminal_score:
+            self.terminal = 1
+
+        return next_state, reward, self.terminal, 0
